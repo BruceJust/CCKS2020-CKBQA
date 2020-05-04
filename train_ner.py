@@ -22,6 +22,10 @@ from data_process import ner_train_data
 # from model import TFBertForTokenClassification
 import os
 
+gpus = tf.config.list_physical_devices('GPU')
+tf.config.experimental.set_memory_growth(gpus[0], True)
+
+
 vocab_file = 'F:\\july\\project\\roberta_chinese_wwm\\vocab.txt'
 config_file = 'F:\\july\\project\\roberta_chinese_wwm\\config.json'
 bert_file = 'F:\\july\\project\\roberta_chinese_wwm'
@@ -70,3 +74,7 @@ history = model.fit(
     verbose=1,
     callbacks=callbacks,
 )
+
+sentence = '什么是寄存器？'
+tensor = tokenizer.encode_plus(sentence, None, max_length=max_seq_len, return_token_type_ids=True, return_tensors='tf' )
+model.predict(tensor)
