@@ -15,12 +15,14 @@ from transformers import (
     BertForSequenceClassification,
     BertForTokenClassification
 )
+
 import pickle
 import numpy as np
 import tensorflow as tf
-from data_process import ner_train_data
+from data_process import sim_train_data
 # from model import TFBertForTokenClassification
 import os
+tf.random.set_seed(1234)
 
 gpus = tf.config.list_physical_devices('GPU')
 tf.config.experimental.set_memory_growth(gpus[0], True)
@@ -30,14 +32,14 @@ vocab_file = 'F:\\july\\project\\roberta_chinese_wwm\\vocab.txt'
 config_file = 'F:\\july\\project\\roberta_chinese_wwm\\config.json'
 bert_file = 'F:\\july\\project\\roberta_chinese_wwm'
 num_labels = 2
-max_seq_len = 25
+max_seq_len = 50
 BATCH_SIZE = 32
 EVAL_BATCH_SIZE = BATCH_SIZE * 2
 tokenizer = BertTokenizer.from_pretrained(vocab_file)
 config = BertConfig.from_pretrained(config_file, num_labels=num_labels)
 # model = BertForTokenClassification.from_pretrained(bert_file, config=config, from_)
 # model.save_pretrained('roberta')
-model = TFBertForTokenClassification.from_pretrained(bert_file, config=config, from_pt=True)
+model = TFBertForSequenceClassification.from_pretrained(bert_file, config=config, from_pt=True)
 
 
 train_file1 = 'corpus\\train_data.pkl'
@@ -45,8 +47,8 @@ train_file2 = 'corpus\\train_data2016.pkl'
 valid_file = 'corpus\\valid_data.pkl'
 
 
-train_data, train_num = ner_train_data(train_file1, train_file2, tokenizer, max_seq_len)
-valid_data, valid_num = ner_train_data(valid_file, None, tokenizer, max_seq_len)
+train_data, train_num = sim_train_data(train_file1, train_file2, tokenizer, max_seq_len)
+valid_data, valid_num = sim_train_data(valid_file, None, tokenizer, max_seq_len)
 train_data = train_data.shuffle(128).batch(BATCH_SIZE).repeat(-1)
 valid_data = valid_data.batch(EVAL_BATCH_SIZE)
 
@@ -58,7 +60,7 @@ model.compile(optimizer=opt, loss=loss, metrics=[metric])
 
 train_steps = train_num // BATCH_SIZE
 valid_steps = valid_num // EVAL_BATCH_SIZE
-model_dir = 'model_ner_new'
+model_dir = 'model_sim_new'
 os.makedirs(model_dir, exist_ok=True)
 model_file = os.path.join(model_dir, 'tf_model.h5')
 callbacks = [tf.keras.callbacks.ModelCheckpoint(model_file,
@@ -68,7 +70,7 @@ callbacks = [tf.keras.callbacks.ModelCheckpoint(model_file,
 model.save_pretrained(model_dir)
 history = model.fit(
     train_data,
-    epochs=5,
+    epochs=30,
     steps_per_epoch=train_steps,
     validation_data=valid_data,
     validation_steps=valid_steps,
@@ -76,7 +78,11 @@ history = model.fit(
     callbacks=callbacks,
 )
 
-# best dev acc 0.9897
-sentence = '什么是寄存器？'
-tensor = tokenizer.encode_plus(sentence, None, max_length=max_seq_len, return_token_type_ids=True, return_tensors='tf' )
+# best dev acc 0.9872
+# best dev acc new 0.9858
+
+
+question = '在中金黄金担任财务负责人,总会计师的是谁'
+predicate = '中金黄金的财务负责人'
+tensor = tokenizer.encode_plus(question, predicate, max_length=max_seq_len, return_token_type_ids=True, return_tensors='tf' )
 model.predict(tensor)

@@ -10,6 +10,7 @@ import pandas as pd
 import pickle
 import tensorflow as tf
 from transformers import InputFeatures
+import random
 
 def get_ner_file(inputpath, outputpath):
     question_num = 0
@@ -54,7 +55,7 @@ def get_ner_file(inputpath, outputpath):
         dic['sql'] = sql
         train_data_[i] = dic
 
-        train_data.append((qid, question, answer, gold_entities, gold_relations, sql))
+        train_data.append((qid, question, answer, gold_entities, gold_relations, sql, len(gold_entities), len(gold_relations)))
         if len(gold_entities) == 1 and len(gold_relations) == 1:
             e1hop1_num += 1
         elif len(gold_entities) == 1 and len(gold_relations) == 2:
@@ -69,16 +70,33 @@ def get_ner_file(inputpath, outputpath):
     question_num += 1
     print ('语料集问题数为%d==单实体单关系数为%d====单实体双关系数为%d==双实体双关系数为%d==总比例为%.3f\n'\
            %(question_num,e1hop1_num,e1hop2_num,e2hop2_num,(e1hop1_num+e1hop2_num+e2hop2_num)/question_num))
-    train_data = pd.DataFrame(train_data, columns=['qid', 'question', 'answer', 'gold_entities', 'gold_relations', 'sql'])
+    train_data = pd.DataFrame(train_data, columns=['qid', 'question', 'answer', 'gold_entities', 'gold_relations', 'sql', 'count_m', 'count_r'])
     train_data.to_csv(outputpath + '.csv', encoding='utf-8', index=False)
     pickle.dump(train_data_, open(outputpath + '.pkl', 'wb'))
 
-def ner_train_data(train_file, tokenizer, max_seq_len):
-    train_data = pickle.load(open(train_file, 'rb'))
+def ner_train_data(file1, file2, tokenizer, max_seq_len):
+    train_data = pickle.load(open(file1, 'rb'))
+    if file2:
+        train_data2 =  pickle.load(open(file2, 'rb'))
+        for i in range(len(train_data2)):
+            train_data[len(train_data)] = train_data2[i]
     train_questions = [train_data[i]['question'] for i in range(len(train_data))]
     train_entities = [train_data[i]['gold_entities'] for i in range(len(train_data))]
     train_entities = [[entity[1:-1].split('_')[0] for entity in line] for line in train_entities] # 把长的entity缩短，并去除<>
-    return get_example_features(train_questions, train_entities, tokenizer, max_seq_len), len(train_questions)
+    return get_ner_example_features(train_questions, train_entities, tokenizer, max_seq_len), len(train_questions)
+
+def sim_train_data(file1, file2, tokenizer, max_seq_len):
+    train_data = pickle.load(open(file1, 'rb'))
+    if file2:
+        train_data2 =  pickle.load(open(file2, 'rb'))
+        for i in range(len(train_data2)):
+            train_data[len(train_data)] = train_data2[i]
+    train_questions = [train_data[i]['question'] for i in range(len(train_data))]
+    train_entities = [train_data[i]['gold_entities'] for i in range(len(train_data))]
+    train_relations = [train_data[i]['gold_relations'] for i in range(len(train_data))]
+    train_entities = [[entity[1:-1].split('_')[0] for entity in line] for line in train_entities] # 把长的entity缩短，并去除<>
+    train_relations = [[relation[1:-1] for relation in line] for line in train_relations] #去除<>
+    return get_sim_example_features(train_questions, train_entities, train_relations, tokenizer, max_seq_len), len(train_questions)
 
 def find_lcsubstr(s1, s2):
     m=[[0 for i in range(len(s2)+1)] for j in range(len(s1)+1)] #生成0矩阵，为方便后续计算，比字符串长度多了一列
@@ -93,7 +111,7 @@ def find_lcsubstr(s1, s2):
                 p=i+1
     return s1[p-mmax:p]
 
-def get_example_features(questions, entitys, tokenizer, max_seq_len):
+def get_ner_example_features(questions, entities, tokenizer, max_seq_len):
     features = []
     for i in range(len(questions)):
         q = questions[i]
@@ -106,7 +124,7 @@ def get_example_features(questions, entitys, tokenizer, max_seq_len):
         input_ids, token_type_ids, attention_mask = inputs["input_ids"], inputs["token_type_ids"], inputs["attention_mask"]
         y = [[0] for j in range(max_seq_len)]
         assert len(input_ids)==len(y)
-        for e in entitys[i]:
+        for e in entities[i]:
             #得到实体名和问题的最长连续公共子串
             e = find_lcsubstr(e,q)
             if e in q:
@@ -115,12 +133,152 @@ def get_example_features(questions, entitys, tokenizer, max_seq_len):
                 if end < max_seq_len-1:
                     for pos in range(begin,end):
                         y[pos] = [1]
-        y = [i[0] for i in y]
+        y = [j[0] for j in y]
         features.append(
             InputFeatures(
                 input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids, label=y
             )
         )
+
+    def gen():
+        for ex in features:
+            yield (
+                {
+                    "input_ids": ex.input_ids,
+                    "attention_mask": ex.attention_mask,
+                    "token_type_ids": ex.token_type_ids,
+                },
+                ex.label,
+            )
+
+    return tf.data.Dataset.from_generator(
+        gen,
+        ({"input_ids": tf.int32, "attention_mask": tf.int32, "token_type_ids": tf.int32},
+         tf.int64),
+        (
+            {
+                "input_ids": tf.TensorShape([None]),
+                "attention_mask": tf.TensorShape([None]),
+                "token_type_ids": tf.TensorShape([None]),
+            },
+            tf.TensorShape([None]),
+        )
+
+    )
+
+
+def get_sim_example_features(questions, entities, relations, tokenizer, max_seq_len):
+    features = []
+    n = 3
+    for i in range(len(questions)):
+        q = questions[i]
+        entity = '的'.join(entities[i])
+        relation = '的'.join(relations[i])
+        # # x = [[0] for j in range(len(q))]
+        # for e in entities[i]:
+        #     #得到实体名和问题的最长连续公共子串
+        #     e = find_lcsubstr(e,q)
+        #     q = q.replace(e, '<sub>')
+        predicate = entity + '的' + relation
+        y = 1
+        inputs = tokenizer.encode_plus(
+            q, predicate, add_special_tokens=True,
+            max_length=max_seq_len,
+            return_token_type_ids=True,
+            pad_to_max_length=True
+        )
+        input_ids, token_type_ids, attention_mask = inputs["input_ids"], inputs["token_type_ids"], inputs[
+            "attention_mask"]
+
+        features.append(
+            InputFeatures(
+                input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids, label=y
+            )
+        )
+        # add negative sampling
+        for j in range(n):
+            y = 0
+            idx = random.randint(0, len(questions) - 1)
+            if idx != i:
+                relation = '的'.join(relations[idx])
+                predicate = entity + '的' + relation
+                inputs = tokenizer.encode_plus(
+                    q, predicate, add_special_tokens=True,
+                    max_length=max_seq_len,
+                    return_token_type_ids=True,
+                    pad_to_max_length=True
+                )
+                input_ids, token_type_ids, attention_mask = inputs["input_ids"], inputs["token_type_ids"], inputs[
+                    "attention_mask"]
+
+                features.append(
+                    InputFeatures(
+                        input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids, label=y
+                    )
+                )
+
+    def gen():
+        for ex in features:
+            yield (
+                {
+                    "input_ids": ex.input_ids,
+                    "attention_mask": ex.attention_mask,
+                    "token_type_ids": ex.token_type_ids,
+                },
+                ex.label,
+            )
+
+    return tf.data.Dataset.from_generator(
+        gen,
+        ({"input_ids": tf.int32, "attention_mask": tf.int32, "token_type_ids": tf.int32},
+         tf.int64),
+        (
+            {
+                "input_ids": tf.TensorShape([None]),
+                "attention_mask": tf.TensorShape([None]),
+                "token_type_ids": tf.TensorShape([None]),
+            },
+            tf.TensorShape([]),
+        )
+
+    )
+
+
+def get_sim_example_features_eval(question, items, tokenizer, max_seq_len, back=False):
+    features = []
+    q = question
+    for i in range(len(items)):
+        entity = '的'.join(items[i][1])
+        relation = '的'.join(items[i][2])
+        # # x = [[0] for j in range(len(q))]
+        # for e in entities[i]:
+        #     #得到实体名和问题的最长连续公共子串
+        #     e = find_lcsubstr(e,q)
+        #     q = q.replace(e, '<sub>')
+        if back:
+            predicate = relation + '的' + entity
+        else:
+            predicate = entity + '的' + relation
+        inputs = tokenizer.encode_plus(
+            q, predicate,
+            add_special_tokens=True,
+            max_length=max_seq_len,
+            return_token_type_ids=True,
+            pad_to_max_length=True,
+            return_tensors='tf'
+        )
+        input_ids, token_type_ids, attention_mask = inputs["input_ids"], inputs["token_type_ids"], inputs[
+            "attention_mask"]
+
+        features.append(
+            inputs
+            )
+
+    return features
+
+
+
+def make_tf_datasets(features):
     def gen():
         for ex in features:
             yield (
@@ -147,7 +305,57 @@ def get_example_features(questions, entitys, tokenizer, max_seq_len):
     )
 
 
+def process_nlpcc2016_corpus():
+    train_file = 'data/nlpcc-iccpol-2016.kbqa.training-data'
+    test_file = 'data/nlpcc-iccpol-2016.kbqa.testing-data'
+    f_train = open(train_file, 'r', encoding='utf8')
+    f_test = open(test_file, 'r', encoding='utf8')
 
+    train_data_ = {}
+    i = 0
+    q = ''
+    for line in f_train:
+        if line.find('<q') == 0:  #question line
+            q = line[line.index('>') + 2:].strip()
+            continue
+        elif line.find('<t') == 0:  #triple line
+            triple = line[line.index('>') + 2:]
+            e = triple[:triple.index(' |||')].strip()
+            triNS = triple[triple.index(' |||') + 5:]
+            r = triNS[:triNS.index(' |||')]
+
+            dic = {}
+            dic['question'] = q  # 原问题
+            dic['answer'] = ' '
+            dic['gold_entities'] = ['<'+ str(e) + '>']  # 实体
+            dic['gold_relations'] = ['<'+ str(r) + '>']  # relation
+            dic['sql'] = line
+            train_data_[i] = dic
+            i += 1
+        else:
+            continue
+
+    for line in f_test:
+        if line.find('<q') == 0:  # question line
+            q = line[line.index('>') + 2:].strip()
+            continue
+        elif line.find('<t') == 0:  # triple line
+            triple = line[line.index('>') + 2:]
+            e = triple[:triple.index(' |||')].strip()
+            triNS = triple[triple.index(' |||') + 5:]
+            r = triNS[:triNS.index(' |||')]
+
+            dic = {}
+            dic['question'] = q  # 原问题
+            dic['answer'] = ' '
+            dic['gold_entities'] = ['<'+ str(e) + '>']  # 实体
+            dic['gold_relations'] = ['<'+ str(r) + '>']  # relation
+            dic['sql'] = line
+            train_data_[i] = dic
+            i += 1
+        else:
+            continue
+    pickle.dump(train_data_, open('corpus/train_data2016.pkl', 'wb'))
 
 if __name__ == '__main__':
     train_file = 'data\\task1-4_train_2020.txt'

@@ -28,7 +28,7 @@ tf.config.experimental.set_memory_growth(gpus[0], True)
 
 
 vocab_file = 'F:\\july\\project\\roberta_chinese_wwm\\vocab.txt'
-model_dir = 'save'
+model_dir = 'model_ner'
 
 tokenizer = BertTokenizer.from_pretrained(vocab_file)
 config = BertConfig.from_pretrained(model_dir)
@@ -37,11 +37,6 @@ model = TFBertForTokenClassification.from_pretrained(model_dir, config=config)
 
 
 
-test_file = 'data/task1-4_valid_2020.questions'
-
-with open(test_file, 'r', encoding='utf-8') as f:
-    questions = f.readlines()
-questions = [question.strip().split(':')[1] for question in questions]
 
 def get_ner_entity(question):
     entities = ''
@@ -57,4 +52,11 @@ def get_ner_entity(question):
 
     return entities.strip().split(' ')
 
-entities = [get_ner_entity(question) for question in questions]
+
+if __name__ == '__main__':
+    test_file = 'data/task1-4_valid_2020.questions'
+
+    with open(test_file, 'r', encoding='utf-8') as f:
+        questions = f.readlines()
+    questions = [question.strip().split(':')[1] for question in questions]
+    entities = [get_ner_entity(question) for question in questions]
